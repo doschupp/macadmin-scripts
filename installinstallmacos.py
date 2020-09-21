@@ -119,7 +119,7 @@ def get_bridge_id():
                 remotectl_cmd, stderr=subprocess.STDOUT
             )
             bridge_id = remotectl_output.decode("utf8").split(" ")[-1].split("\n")[0]
-        except subprocess.CalledProcessError as err:
+        except subprocess.CalledProcessError:
             return None
         return bridge_id
 
@@ -802,6 +802,18 @@ def main():
             "run again with sudo or as root."
         )
 
+    current_dir = os.getcwd()
+    if os.path.expanduser("~") in current_dir:
+        bad_dirs = ["Documents", "Desktop", "Downloads", "Library"]
+        for bad_dir in bad_dirs:
+            if bad_dir in os.path.split(current_dir):
+                print(
+                    "Running this script from %s may not work as expected. "
+                    "If this does not run as expected, please run again from "
+                    "somewhere else, such as /Users/Shared." % current_dir,
+                    file=sys.stderr,
+                )
+
     if args.catalogurl:
         su_catalog_url = args.catalogurl
     elif args.seedprogram:
@@ -901,7 +913,7 @@ def main():
         if not_valid and (
             args.validate
             or (args.auto or args.version or args.os)
-            # and not args.beta  # not needed now we have DeviceID check
+            # and not args.beta  # not needed now we have DeviceID check
         ):
             continue
 
@@ -925,7 +937,7 @@ def main():
                 except NameError:
                     latest_valid_build = product_info[product_id]["BUILD"]
                     # if using newer-than option, skip if not newer than the version
-                    #  we are checking against
+                    #  we are checking against
                     if args.newer_than_version:
                         latest_valid_build = get_latest_version(
                             product_info[product_id]["version"], args.newer_than_version
@@ -945,7 +957,7 @@ def main():
                     )
                     if latest_valid_build == product_info[product_id]["BUILD"]:
                         # if using newer-than option, skip if not newer than the version
-                        #  we are checking against
+                        #  we are checking against
                         if args.newer_than_version:
                             latest_valid_build = get_latest_version(
                                 product_info[product_id]["version"],
