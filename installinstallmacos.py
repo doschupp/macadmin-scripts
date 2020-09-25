@@ -382,8 +382,11 @@ def replicate_url(
     if show_progress:
         options = "-fL"
     else:
-        options = "-sfL"
-    curl_cmd = ["/usr/bin/curl", options, "--create-dirs", "-o", local_file_path]
+        options = '-sfL'
+    curl_cmd = ['/usr/bin/curl', options,
+                '--create-dirs',
+                '--compressed',
+                '-o', local_file_path]
     if not ignore_cache and os.path.exists(local_file_path):
         curl_cmd.extend(["-z", local_file_path])
         if attempt_resume:
@@ -807,12 +810,10 @@ def main():
         bad_dirs = ["Documents", "Desktop", "Downloads", "Library"]
         for bad_dir in bad_dirs:
             if bad_dir in os.path.split(current_dir):
-                print(
-                    "Running this script from %s may not work as expected. "
-                    "If this does not run as expected, please run again from "
-                    "somewhere else, such as /Users/Shared." % current_dir,
-                    file=sys.stderr,
-                )
+                print('Running this script from %s may not work as expected. '
+                      'If this does not run as expected, please run again from '
+                      'somewhere else, such as /Users/Shared.'
+                      % current_dir, file=sys.stderr)
 
     if args.catalogurl:
         su_catalog_url = args.catalogurl
@@ -913,7 +914,7 @@ def main():
         if not_valid and (
             args.validate
             or (args.auto or args.version or args.os)
-            # and not args.beta  # not needed now we have DeviceID check
+            # and not args.beta  # not needed now we have DeviceID check
         ):
             continue
 
@@ -937,7 +938,7 @@ def main():
                 except NameError:
                     latest_valid_build = product_info[product_id]["BUILD"]
                     # if using newer-than option, skip if not newer than the version
-                    #  we are checking against
+                    #  we are checking against
                     if args.newer_than_version:
                         latest_valid_build = get_latest_version(
                             product_info[product_id]["version"], args.newer_than_version
@@ -957,7 +958,7 @@ def main():
                     )
                     if latest_valid_build == product_info[product_id]["BUILD"]:
                         # if using newer-than option, skip if not newer than the version
-                        #  we are checking against
+                        #  we are checking against
                         if args.newer_than_version:
                             latest_valid_build = get_latest_version(
                                 product_info[product_id]["version"],
