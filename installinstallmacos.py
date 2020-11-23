@@ -56,6 +56,9 @@ DEFAULT_SUCATALOGS = {
     "19": "https://swscan.apple.com/content/catalogs/others/"
     "index-10.15-10.14-10.13-10.12-10.11-10.10-10.9"
     "-mountainlion-lion-snowleopard-leopard.merged-1.sucatalog",
+    "20": "https://swscan.apple.com/content/catalogs/others/"
+    "index-10.16-10.15-10.14-10.13-10.12-10.11-10.10-10.9"
+    "-mountainlion-lion-snowleopard-leopard.merged-1.sucatalog",
 }
 
 SEED_CATALOGS_PLIST = (
@@ -382,14 +385,12 @@ def replicate_url(
     if show_progress:
         options = "-fL"
     else:
-        options = '-sfL'
-    curl_cmd = ['/usr/bin/curl', options,
-                '--create-dirs',
-                '-o', local_file_path]
+        options = "-sfL"
+    curl_cmd = ["/usr/bin/curl", options, "--create-dirs", "-o", local_file_path]
     if not full_url.endswith(".gz"):
         # stupid hack for stupid Apple behavior where it sometimes returns
         # compressed files even when not asked for
-        curl_cmd.append('--compressed')
+        curl_cmd.append("--compressed")
     if not ignore_cache and os.path.exists(local_file_path):
         curl_cmd.extend(["-z", local_file_path])
         if attempt_resume:
@@ -492,7 +493,9 @@ def get_board_ids(filename):
     supported_board_ids = ""
     with open(filename) as search:
         for line in search:
-            line = line.decode("utf8").rstrip()  # remove '\n' at end of line
+            if type(line) == bytes:
+                line = line.decode("utf8")
+            line = line.rstrip()  # remove '\n' at end of line
             # dist files for macOS 10.* list boardIDs whereas dist files for
             # macOS 11.* list supportedBoardIDs
             if "boardIds" in line:
@@ -508,7 +511,9 @@ def get_device_ids(filename):
     supported_device_ids = ""
     with open(filename) as search:
         for line in search:
-            line = line.decode("utf8").rstrip()  # remove '\n' at end of line
+            if type(line) == bytes:
+                line = line.decode("utf8")
+            line = line.rstrip()  # remove '\n' at end of line
             if "supportedDeviceIDs" in line:
                 supported_device_ids = line.lstrip("var supportedDeviceIDs = ")
                 return supported_device_ids
@@ -520,7 +525,9 @@ def get_unsupported_models(filename):
     unsupported_models = ""
     with open(filename) as search:
         for line in search:
-            line = line.decode("utf8").rstrip()  # remove '\n' at end of line
+            if type(line) == bytes:
+                line = line.decode("utf8")
+            line = line.rstrip()  # remove '\n' at end of line
             if "nonSupportedModels" in line:
                 unsupported_models = line.lstrip("var nonSupportedModels = ")
                 return unsupported_models
@@ -553,25 +560,34 @@ def download_and_parse_sucatalog(sucatalog, workdir, ignore_cache=False):
             exit(-1)
 
 
-def find_mac_os_installers(catalog):
+def find_mac_os_installers(catalog, installassistant_pkg_only=False):
     """Return a list of product identifiers for what appear to be macOS
     installers"""
     mac_os_installer_products = []
     if "Products" in catalog:
         for product_key in catalog["Products"].keys():
             product = catalog["Products"][product_key]
-            try:
-                if product["ExtendedMetaInfo"]["InstallAssistantPackageIdentifiers"]:
-                    mac_os_installer_products.append(product_key)
-            except KeyError:
-                continue
+            # account for args.pkg
+            if installassistant_pkg_only:
+                try:
+                    if product['ExtendedMetaInfo']['InstallAssistantPackageIdentifiers']:
+                        if product['ExtendedMetaInfo']['InstallAssistantPackageIdentifiers']['SharedSupport'] == 'com.apple.pkg.InstallAssistant.macOSBigSur':
+                            mac_os_installer_products.append(product_key)
+                except KeyError:
+                    continue
+            else:
+                try:
+                    if product["ExtendedMetaInfo"]["InstallAssistantPackageIdentifiers"]:
+                        mac_os_installer_products.append(product_key)
+                except KeyError:
+                    continue
     return mac_os_installer_products
 
 
-def os_installer_product_info(catalog, workdir, ignore_cache=False):
+def os_installer_product_info(catalog, workdir, installassistant_pkg_only, ignore_cache=False):
     """Returns a dict of info about products that look like macOS installers"""
     product_info = {}
-    installer_products = find_mac_os_installers(catalog)
+    installer_products = find_mac_os_installers(catalog, installassistant_pkg_only)
     for product_key in installer_products:
         product_info[product_key] = {}
         # get the localized title (e.g. "macOS Catalina Beta") and version
@@ -784,6 +800,11 @@ def main():
         help="Selects the latest valid build ID matching "
         "the selected OS version (e.g. 10.14).",
     )
+    parser.add_argument(
+        "--pkg",
+        action="store_true",
+        help="Search only for InstallAssistant packages (macOS Big Sur only)",
+    )
     args = parser.parse_args()
 
     # show this Mac's info
@@ -813,10 +834,12 @@ def main():
         bad_dirs = ["Documents", "Desktop", "Downloads", "Library"]
         for bad_dir in bad_dirs:
             if bad_dir in os.path.split(current_dir):
-                print('Running this script from %s may not work as expected. '
-                      'If this does not run as expected, please run again from '
-                      'somewhere else, such as /Users/Shared.'
-                      % current_dir, file=sys.stderr)
+                print(
+                    "Running this script from %s may not work as expected. "
+                    "If this does not run as expected, please run again from "
+                    "somewhere else, such as /Users/Shared." % current_dir,
+                    file=sys.stderr,
+                )
 
     if args.catalogurl:
         su_catalog_url = args.catalogurl
@@ -846,7 +869,7 @@ def main():
         su_catalog_url, args.workdir, ignore_cache=args.ignore_cache
     )
     product_info = os_installer_product_info(
-        catalog, args.workdir, ignore_cache=args.ignore_cache
+        catalog, args.workdir, args.pkg, ignore_cache=args.ignore_cache
     )
     if not product_info:
         print("No macOS installer products found in the sucatalog.", file=sys.stderr)
@@ -917,7 +940,7 @@ def main():
         if not_valid and (
             args.validate
             or (args.auto or args.version or args.os)
-            # and not args.beta  # not needed now we have DeviceID check
+            # and not args.beta  # not needed now we have DeviceID check
         ):
             continue
 
@@ -941,7 +964,7 @@ def main():
                 except NameError:
                     latest_valid_build = product_info[product_id]["BUILD"]
                     # if using newer-than option, skip if not newer than the version
-                    #  we are checking against
+                    #  we are checking against
                     if args.newer_than_version:
                         latest_valid_build = get_latest_version(
                             product_info[product_id]["version"], args.newer_than_version
@@ -961,7 +984,7 @@ def main():
                     )
                     if latest_valid_build == product_info[product_id]["BUILD"]:
                         # if using newer-than option, skip if not newer than the version
-                        #  we are checking against
+                        #  we are checking against
                         if args.newer_than_version:
                             latest_valid_build = get_latest_version(
                                 product_info[product_id]["version"],
@@ -1151,57 +1174,81 @@ def main():
         print("Exiting.")
         exit(0)
 
-    # download all the packages for the selected product
-    replicate_product(catalog, product_id, args.workdir, ignore_cache=args.ignore_cache)
+    # shortened workflow if we just want a macOS Big Sur+ package
+    # taken from @scriptingosx's Fetch-Installer-Pkg project
+    # (https://github.com/scriptingosx/fetch-installer-pkg)
+    if args.pkg:
+        product = catalog['Products'][product_id]
+        
+        # determine the InstallAssistant pkg url
+        for package in product['Packages']:
+            package_url = package['URL']
+            if package_url.endswith('InstallAssistant.pkg'):
+                break
+        
+        # print("Package URL is %s" % package_url)
+        download_pkg = replicate_url(package_url, args.workdir, True, ignore_cache=args.ignore_cache)
+        
+        pkg_name = ('InstallAssistant-%s-%s.pkg' % (product_info[product_id]['version'],
+                    product_info[product_id]['BUILD']))
+        
+        # hard link the downloaded file to cwd
+        local_pkg = os.path.join(args.workdir, pkg_name)
+        os.link(download_pkg, local_pkg)
+        print("Package downloaded to: %s" % local_pkg)
+        
+    else:
+        # download all the packages for the selected product
+        replicate_product(catalog, product_id, args.workdir, ignore_cache=args.ignore_cache)
 
-    # generate a name for the sparseimage
-    volname = "Install_macOS_%s-%s" % (
-        product_info[product_id]["version"],
-        product_info[product_id]["BUILD"],
-    )
-    sparse_diskimage_path = os.path.join(args.workdir, volname + ".sparseimage")
-    if os.path.exists(sparse_diskimage_path):
-        os.unlink(sparse_diskimage_path)
-
-    # make an empty sparseimage and mount it
-    print("Making empty sparseimage...")
-    sparse_diskimage_path = make_sparse_image(volname, sparse_diskimage_path)
-    mountpoint = mountdmg(sparse_diskimage_path)
-    if mountpoint:
-        # install the product to the mounted sparseimage volume
-        success = install_product(
-            product_info[product_id]["DistributionPath"], mountpoint
+        # generate a name for the sparseimage
+        volname = "Install_macOS_%s-%s" % (
+            product_info[product_id]["version"],
+            product_info[product_id]["BUILD"],
         )
-        if not success:
-            print("Product installation failed.", file=sys.stderr)
-            unmountdmg(mountpoint)
-            exit(-1)
-        # add the seeding program xattr to the app if applicable
-        seeding_program = get_seeding_program(su_catalog_url)
-        if seeding_program:
-            installer_app = find_installer_app(mountpoint)
-            if installer_app:
-                print(
-                    "Adding seeding program %s extended attribute to app"
-                    % seeding_program
-                )
-                xattr.setxattr(installer_app, "SeedProgram", seeding_program.encode())
-        print("Product downloaded and installed to %s" % sparse_diskimage_path)
-        if args.raw:
-            unmountdmg(mountpoint)
-        else:
-            # if --raw option not given, create a r/o compressed diskimage
-            # containing the Install macOS app
-            compressed_diskimagepath = os.path.join(args.workdir, volname + ".dmg")
-            if os.path.exists(compressed_diskimagepath):
-                os.unlink(compressed_diskimagepath)
-            app_path = find_installer_app(mountpoint)
-            if app_path:
-                make_compressed_dmg(app_path, compressed_diskimagepath, volname)
-            # unmount sparseimage
-            unmountdmg(mountpoint)
-            # delete sparseimage since we don't need it any longer
+        sparse_diskimage_path = os.path.join(args.workdir, volname + ".sparseimage")
+        if os.path.exists(sparse_diskimage_path):
             os.unlink(sparse_diskimage_path)
+
+        # make an empty sparseimage and mount it
+        print("Making empty sparseimage...")
+        sparse_diskimage_path = make_sparse_image(volname, sparse_diskimage_path)
+        mountpoint = mountdmg(sparse_diskimage_path)
+        if mountpoint:
+            # install the product to the mounted sparseimage volume
+            success = install_product(
+                product_info[product_id]["DistributionPath"], mountpoint
+            )
+            if not success:
+                print("Product installation failed.", file=sys.stderr)
+                unmountdmg(mountpoint)
+                exit(-1)
+            # add the seeding program xattr to the app if applicable
+            seeding_program = get_seeding_program(su_catalog_url)
+            if seeding_program:
+                installer_app = find_installer_app(mountpoint)
+                if installer_app:
+                    print(
+                        "Adding seeding program %s extended attribute to app"
+                        % seeding_program
+                    )
+                    xattr.setxattr(installer_app, "SeedProgram", seeding_program.encode())
+            print("Product downloaded and installed to %s" % sparse_diskimage_path)
+            if args.raw:
+                unmountdmg(mountpoint)
+            else:
+                # if --raw option not given, create a r/o compressed diskimage
+                # containing the Install macOS app
+                compressed_diskimagepath = os.path.join(args.workdir, volname + ".dmg")
+                if os.path.exists(compressed_diskimagepath):
+                    os.unlink(compressed_diskimagepath)
+                app_path = find_installer_app(mountpoint)
+                if app_path:
+                    make_compressed_dmg(app_path, compressed_diskimagepath, volname)
+                # unmount sparseimage
+                unmountdmg(mountpoint)
+                # delete sparseimage since we don't need it any longer
+                os.unlink(sparse_diskimage_path)
 
 
 if __name__ == "__main__":
