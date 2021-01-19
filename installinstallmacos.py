@@ -67,17 +67,32 @@ SEED_CATALOGS_PLIST = (
 )
 
 
-def get_board_id():
-    """Gets the local system board ID"""
-    ioreg_cmd = ["/usr/sbin/ioreg", "-p", "IODeviceTree", "-r", "-n", "/", "-d", "1"]
+def get_device_id():
+    """Gets the local device ID on Apple Silicon Macs or the board_id of older Macs"""
+    ioreg_cmd = ["/usr/sbin/ioreg", "-c", "IOPlatformExpertDevice", "-d", "2"]
     try:
         ioreg_output = subprocess.check_output(ioreg_cmd).splitlines()
+        board_id = ""
+        device_id = ""
         for line in ioreg_output:
             line_decoded = line.decode("utf8")
             if "board-id" in line_decoded:
                 board_id = line_decoded.split("<")[-1]
-                board_id = board_id[board_id.find('<"') + 2 : board_id.find('">')]
-                return board_id
+                board_id = board_id[
+                    board_id.find('<"') + 2 : board_id.find('">')  # noqa: E203
+                ]
+            elif "compatible" in line_decoded:
+                device_details = line_decoded.split("<")[-1]
+                device_details = device_details[
+                    device_details.find("<")
+                    + 2 : device_details.find(">")  # noqa: E203
+                ]
+                device_id = (
+                    device_details.replace('","', ";").replace('"', "").split(";")[0]
+                )
+        if board_id:
+            device_id = ""
+        return board_id, device_id
     except subprocess.CalledProcessError as err:
         raise ReplicationError(err)
 
@@ -244,7 +259,7 @@ def make_sparse_image(volume_name, output_path):
         exit(-1)
     try:
         return read_plist_from_string(output)[0]
-    except IndexError as err:
+    except IndexError:
         print("Unexpected output from hdiutil: %s" % output, file=sys.stderr)
         exit(-1)
     except ExpatError as err:
@@ -499,15 +514,16 @@ def get_board_ids(filename):
             # dist files for macOS 10.* list boardIDs whereas dist files for
             # macOS 11.* list supportedBoardIDs
             if "boardIds" in line:
-                supported_board_ids = line.lstrip("var boardIDs = ")
+                supported_board_ids = line.replace("var boardIDs = ", "")
             elif "supportedBoardIDs" in line:
-                supported_board_ids = line.lstrip("var supportedBoardIDs = ")
+                supported_board_ids = line.replace("var supportedBoardIDs = ", "")
                 return supported_board_ids
 
 
 def get_device_ids(filename):
     """Parses a softwareupdate dist file, returning a list of supported
-    Device IDs. These are used for identifying T2 chips in the dist files of macOS 11.* - not checked in older builds"""
+    Device IDs. These are used for identifying T2 and Apple Silicon chips in the dist files of
+    macOS 11.* - not checked in older builds"""
     supported_device_ids = ""
     with open(filename) as search:
         for line in search:
@@ -515,7 +531,7 @@ def get_device_ids(filename):
                 line = line.decode("utf8")
             line = line.rstrip()  # remove '\n' at end of line
             if "supportedDeviceIDs" in line:
-                supported_device_ids = line.lstrip("var supportedDeviceIDs = ")
+                supported_device_ids = line.replace("var supportedDeviceIDs = ", "")
                 return supported_device_ids
 
 
@@ -570,21 +586,26 @@ def find_mac_os_installers(catalog, installassistant_pkg_only=False):
             # account for args.pkg
             if installassistant_pkg_only:
                 try:
-                    if product['ExtendedMetaInfo']['InstallAssistantPackageIdentifiers']:
-                        if product['ExtendedMetaInfo']['InstallAssistantPackageIdentifiers']['SharedSupport'] == 'com.apple.pkg.InstallAssistant.macOSBigSur':
-                            mac_os_installer_products.append(product_key)
+                    if product["ExtendedMetaInfo"][
+                        "InstallAssistantPackageIdentifiers"
+                    ]["SharedSupport"]:
+                        mac_os_installer_products.append(product_key)
                 except KeyError:
                     continue
             else:
                 try:
-                    if product["ExtendedMetaInfo"]["InstallAssistantPackageIdentifiers"]:
+                    if product["ExtendedMetaInfo"][
+                        "InstallAssistantPackageIdentifiers"
+                    ]:
                         mac_os_installer_products.append(product_key)
                 except KeyError:
                     continue
     return mac_os_installer_products
 
 
-def os_installer_product_info(catalog, workdir, installassistant_pkg_only, ignore_cache=False):
+def os_installer_product_info(
+    catalog, workdir, installassistant_pkg_only, ignore_cache=False
+):
     """Returns a dict of info about products that look like macOS installers"""
     product_info = {}
     installer_products = find_mac_os_installers(catalog, installassistant_pkg_only)
@@ -809,17 +830,22 @@ def main():
 
     # show this Mac's info
     hw_model = get_hw_model()
-    board_id = get_board_id()
+    board_id, device_id = get_device_id()
     bridge_id = get_bridge_id()
     build_info = get_current_build_info()
     is_vm = is_a_vm()
 
     print("This Mac:")
-    if is_vm == True:
+    if is_vm is True:
         print("Identified as a Virtual Machine")
-    print("%-17s: %s" % ("Model Identifier", hw_model))
-    print("%-17s: %s" % ("Bridge ID", bridge_id))
-    print("%-17s: %s" % ("Board ID", board_id))
+    if hw_model:
+        print("%-17s: %s" % ("Model Identifier", hw_model))
+    if bridge_id:
+        print("%-17s: %s" % ("Bridge ID", bridge_id))
+    if board_id:
+        print("%-17s: %s" % ("Board ID", board_id))
+    if device_id:
+        print("%-17s: %s" % ("Device ID", device_id))
     print("%-17s: %s" % ("OS Version", build_info[0]))
     print("%-17s: %s\n" % ("Build ID", build_info[1]))
 
@@ -892,15 +918,19 @@ def main():
     # this is where we do checks for validity based on model type and version
     for index, product_id in enumerate(product_info):
         not_valid = ""
-        if is_vm == False:
+        if is_vm is False:
             # first look for a BoardID (not present in modern hardware)
             if board_id and product_info[product_id]["BoardIDs"]:
                 if board_id not in product_info[product_id]["BoardIDs"]:
                     not_valid = "Unsupported Board ID"
-            # if there's no Board ID there has to be a BridgeID:
+            # if there's no Board ID then try BridgeID (T2):
             elif bridge_id and product_info[product_id]["DeviceIDs"]:
                 if bridge_id not in product_info[product_id]["DeviceIDs"]:
                     not_valid = "Unsupported Bridge ID"
+            # if there's no BridgeID try DeviceID (Apple Silicon):
+            elif device_id and product_info[product_id]["DeviceIDs"]:
+                if device_id not in product_info[product_id]["DeviceIDs"]:
+                    not_valid = "Unsupported Device ID"
             # finally we fall back on ModelIdentifiers for T1 and older
             elif hw_model and product_info[product_id]["UnsupportedModels"]:
                 if hw_model in product_info[product_id]["UnsupportedModels"]:
@@ -940,7 +970,7 @@ def main():
         if not_valid and (
             args.validate
             or (args.auto or args.version or args.os)
-            # and not args.beta  # not needed now we have DeviceID check
+            # and not args.beta  # not needed now we have DeviceID check
         ):
             continue
 
@@ -950,8 +980,14 @@ def main():
 
         # skip if an OS is selected and it does not match
         if args.os:
-            major = product_info[product_id]["version"].split(".", 2)[:2]
-            os_version = ".".join(major)
+            os_version = product_info[product_id]["version"].split(".")[0]
+            try:
+                if int(os_version) == 10:
+                    major = product_info[product_id]["version"].split(".", 2)[:2]
+                    os_version = ".".join(major)
+            except ValueError:
+                #  Account for when no version information is given
+                os_version = ""
             if args.os != os_version:
                 continue
 
@@ -964,7 +1000,7 @@ def main():
                 except NameError:
                     latest_valid_build = product_info[product_id]["BUILD"]
                     # if using newer-than option, skip if not newer than the version
-                    #  we are checking against
+                    #  we are checking against
                     if args.newer_than_version:
                         latest_valid_build = get_latest_version(
                             product_info[product_id]["version"], args.newer_than_version
@@ -984,7 +1020,7 @@ def main():
                     )
                     if latest_valid_build == product_info[product_id]["BUILD"]:
                         # if using newer-than option, skip if not newer than the version
-                        #  we are checking against
+                        #  we are checking against
                         if args.newer_than_version:
                             latest_valid_build = get_latest_version(
                                 product_info[product_id]["version"],
@@ -1024,7 +1060,7 @@ def main():
 
     # Stop here if no valid builds found
     if (
-        valid_build_found == False
+        valid_build_found is False
         and not args.build
         and not args.current
         and not args.validate
@@ -1174,32 +1210,38 @@ def main():
         print("Exiting.")
         exit(0)
 
-    # shortened workflow if we just want a macOS Big Sur+ package
-    # taken from @scriptingosx's Fetch-Installer-Pkg project
+    #  shortened workflow if we just want a macOS Big Sur+ package
+    #  taken from @scriptingosx's Fetch-Installer-Pkg project
     # (https://github.com/scriptingosx/fetch-installer-pkg)
     if args.pkg:
-        product = catalog['Products'][product_id]
-        
+        product = catalog["Products"][product_id]
+
         # determine the InstallAssistant pkg url
-        for package in product['Packages']:
-            package_url = package['URL']
-            if package_url.endswith('InstallAssistant.pkg'):
+        for package in product["Packages"]:
+            package_url = package["URL"]
+            if package_url.endswith("InstallAssistant.pkg"):
                 break
-        
+
         # print("Package URL is %s" % package_url)
-        download_pkg = replicate_url(package_url, args.workdir, True, ignore_cache=args.ignore_cache)
-        
-        pkg_name = ('InstallAssistant-%s-%s.pkg' % (product_info[product_id]['version'],
-                    product_info[product_id]['BUILD']))
-        
+        download_pkg = replicate_url(
+            package_url, args.workdir, True, ignore_cache=args.ignore_cache
+        )
+
+        pkg_name = "InstallAssistant-%s-%s.pkg" % (
+            product_info[product_id]["version"],
+            product_info[product_id]["BUILD"],
+        )
+
         # hard link the downloaded file to cwd
         local_pkg = os.path.join(args.workdir, pkg_name)
         os.link(download_pkg, local_pkg)
         print("Package downloaded to: %s" % local_pkg)
-        
+
     else:
         # download all the packages for the selected product
-        replicate_product(catalog, product_id, args.workdir, ignore_cache=args.ignore_cache)
+        replicate_product(
+            catalog, product_id, args.workdir, ignore_cache=args.ignore_cache
+        )
 
         # generate a name for the sparseimage
         volname = "Install_macOS_%s-%s" % (
@@ -1232,7 +1274,9 @@ def main():
                         "Adding seeding program %s extended attribute to app"
                         % seeding_program
                     )
-                    xattr.setxattr(installer_app, "SeedProgram", seeding_program.encode())
+                    xattr.setxattr(
+                        installer_app, "SeedProgram", seeding_program.encode()
+                    )
             print("Product downloaded and installed to %s" % sparse_diskimage_path)
             if args.raw:
                 unmountdmg(mountpoint)
